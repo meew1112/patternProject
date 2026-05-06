@@ -22,7 +22,10 @@ import medmnist
 from medmnist import INFO, Evaluator
 from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 import natten
-from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix
+from pytorch_grad_cam import GradCAM
+from pytorch_grad_cam.utils.image import show_cam_on_image
+from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix
 from sklearn.preprocessing import label_binarize
 from MedViT import MedViT_tiny, MedViT_small, MedViT_base, MedViT_large
 #from MedViTV1 import MedViT_small, MedViT_base, MedViT_large
@@ -133,8 +136,178 @@ def overall_accuracy(conf_matrix):
     total_sum = conf_matrix.sum()  # Sum of all elements in the matrix
     return tp_tn_sum / total_sum
 
-def train_other(epochs, net, train_loader, test_loader, optimizer, scheduler, loss_function, device, save_path):
+
+def get_class_names(dataset):
+    """Best-effort extraction of class names from wrapped datasets."""
+    base_dataset = dataset.dataset if isinstance(dataset, torch.utils.data.Subset) else dataset
+    if hasattr(base_dataset, 'classes'):
+        return list(base_dataset.classes)
+    if hasattr(base_dataset, 'class_to_idx'):
+        return list(base_dataset.class_to_idx.keys())
+    return []
+
+
+def plot_training_curves(train_losses, val_losses, val_accs, val_aucs, output_path):
+    epochs = range(1, len(train_losses) + 1)
+    plt.figure(figsize=(15, 5))
+
+    plt.subplot(1, 3, 1)
+    plt.plot(epochs, train_losses, label='Train Loss')
+    plt.plot(epochs, val_losses, label='Val Loss')
+    plt.title('Training & Validation Loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+
+    plt.subplot(1, 3, 2)
+    plt.plot(epochs, val_accs, label='Val Acc', color='green')
+    plt.title('Validation Accuracy')
+    plt.xlabel('Epochs')
+    plt.ylabel('Accuracy')
+    plt.legend()
+
+    plt.subplot(1, 3, 3)
+    plt.plot(epochs, val_aucs, label='Val AUC', color='red')
+    plt.title('Validation AUC')
+    plt.xlabel('Epochs')
+    plt.ylabel('AUC')
+    plt.legend()
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=200, bbox_inches='tight')
+    plt.close()
+
+
+def plot_confusion_matrix(conf_matrix, class_names, output_path, normalize=True):
+    matrix = conf_matrix.astype(np.float32)
+    if normalize and matrix.sum() > 0:
+        row_sums = matrix.sum(axis=1, keepdims=True)
+        row_sums[row_sums == 0] = 1.0
+        matrix = matrix / row_sums
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    im = ax.imshow(matrix, interpolation='nearest', cmap='Blues')
+    fig.colorbar(im, ax=ax)
+
+    tick_positions = np.arange(len(class_names))
+    ax.set_xticks(tick_positions)
+    ax.set_yticks(tick_positions)
+    ax.set_xticklabels(class_names, rotation=45, ha='right')
+    ax.set_yticklabels(class_names)
+    ax.set_xlabel('Predicted label')
+    ax.set_ylabel('True label')
+    ax.set_title('Confusion Matrix' + (' (Normalized)' if normalize else ''))
+
+    threshold = matrix.max() / 2.0 if matrix.size else 0.0
+    for i in range(matrix.shape[0]):
+        for j in range(matrix.shape[1]):
+            value = f'{matrix[i, j]:.2f}' if normalize else f'{int(conf_matrix[i, j])}'
+            ax.text(j, i, value, ha='center', va='center', color='white' if matrix[i, j] > threshold else 'black')
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=200, bbox_inches='tight')
+    plt.close(fig)
+
+
+def get_gradcam_target_layer(model):
+    if hasattr(model, 'features'):
+        for layer in reversed(model.features):
+            if hasattr(layer, 'norm2'):
+                return layer.norm2
+            if hasattr(layer, 'norm1'):
+                return layer.norm1
+            if hasattr(layer, 'norm'):
+                return layer.norm
+    if hasattr(model, 'norm'):
+        return model.norm
+    return None
+
+
+def save_gradcam_for_misclassified_sample(model, loader, device, class_names, output_path):
+    target_layer = get_gradcam_target_layer(model)
+    if target_layer is None:
+        print('Grad-CAM skipped: no valid target layer found.')
+        return
+
+    model.eval()
+    cam = GradCAM(model=model, target_layers=[target_layer])
+    sample_found = False
+
+    for inputs, targets in loader:
+        inputs = inputs.to(device)
+        targets = targets.to(device).squeeze().long()
+
+        with torch.no_grad():
+            outputs = model(inputs)
+            predictions = torch.argmax(outputs, dim=1)
+
+        mismatch = predictions.ne(targets)
+        if not mismatch.any():
+            continue
+
+        sample_index = torch.where(mismatch)[0][0].item()
+        input_tensor = inputs[sample_index:sample_index + 1]
+        true_label = int(targets[sample_index].item())
+        pred_label = int(predictions[sample_index].item())
+
+        grayscale_cam = cam(input_tensor=input_tensor, targets=[ClassifierOutputTarget(true_label)])[0]
+        raw_image = input_tensor[0].detach().cpu().permute(1, 2, 0).numpy()
+        raw_image = np.clip(raw_image * 0.5 + 0.5, 0, 1)
+        cam_image = show_cam_on_image(raw_image, grayscale_cam, use_rgb=True)
+
+        plt.imsave(output_path, cam_image)
+        print(f'--> Grad-CAM saved to {output_path} (true={class_names[true_label]}, pred={class_names[pred_label]})')
+        sample_found = True
+        break
+
+    if not sample_found:
+        print('Grad-CAM skipped: no misclassified validation sample found.')
+
+
+def evaluate_with_metrics(model, loader, n_classes, criterion, device):
+    model.eval()
+    all_probs = []
+    all_targets = []
+    running_loss = 0.0
+
+    with torch.no_grad():
+        for inputs, targets in loader:
+            inputs = inputs.to(device)
+            targets = targets.to(device).squeeze().long()
+            outputs = model(inputs)
+            loss = criterion(outputs, targets)
+            running_loss += loss.item() * inputs.size(0)
+
+            probs = torch.softmax(outputs, dim=1)
+            all_probs.append(probs.cpu().numpy())
+            all_targets.append(targets.cpu().numpy())
+
+    all_probs = np.concatenate(all_probs, axis=0)
+    all_targets = np.concatenate(all_targets, axis=0)
+
+    epoch_loss = running_loss / len(loader.dataset)
+    preds_classes = np.argmax(all_probs, axis=1)
+    acc = accuracy_score(all_targets, preds_classes)
+
+    try:
+        if n_classes == 2:
+            auc = roc_auc_score(all_targets, all_probs[:, 1])
+        else:
+            auc = roc_auc_score(all_targets, all_probs, multi_class='ovr')
+    except ValueError:
+        auc = 0.0
+
+    conf_matrix = confusion_matrix(all_targets, preds_classes, labels=list(range(n_classes)))
+    return epoch_loss, acc, auc, conf_matrix, preds_classes, all_targets
+
+def train_other(epochs, net, train_loader, test_loader, optimizer, scheduler, loss_function, device, save_path, class_names, output_dir):
     best_acc = 0.0
+    history_train_losses = []
+    history_val_losses = []
+    history_val_accs = []
+    history_val_aucs = []
+
+    os.makedirs(output_dir, exist_ok=True)
     
     for epoch in range(epochs):
         net.train()
@@ -154,66 +327,40 @@ def train_other(epochs, net, train_loader, test_loader, optimizer, scheduler, lo
 
             train_bar.desc = f"train epoch[{epoch + 1}/{epochs}] loss:{loss:.3f}"
         
-        # Validation Loop
-        net.eval()
-        all_preds = []
-        all_labels = []
-        all_probs = []  # Store raw probabilities/logits for AUC
-        acc = 0.0
-        
-        with torch.no_grad():
-            val_bar = tqdm(test_loader, file=sys.stdout)
-            for val_data in val_bar:
-                val_images, val_labels = val_data
-                outputs = net(val_images.to(device))  # Raw outputs (logits)
-                probs = torch.softmax(outputs, dim=1)  # Convert to probabilities
-                
-                predict_y = torch.max(probs, dim=1)[1]  # Predicted class
+        val_loss, val_acc, auc, conf_matrix, preds_classes, all_labels = evaluate_with_metrics(
+            net, test_loader, len(class_names), loss_function, device
+        )
 
-                # Collect predictions, labels, and probabilities
-                all_preds.extend(predict_y.cpu().numpy())
-                all_labels.extend(val_labels.cpu().numpy())
-                all_probs.extend(probs.cpu().numpy())
+        precision = precision_score(all_labels, preds_classes, average='weighted', zero_division=0)
+        recall = recall_score(all_labels, preds_classes, average='weighted', zero_division=0)
+        f1 = f1_score(all_labels, preds_classes, average='weighted', zero_division=0)
+        specificity = specificity_per_class(conf_matrix)
+        avg_specificity = sum(specificity) / len(specificity) if len(specificity) else 0.0
+        overall_acc = overall_accuracy(conf_matrix) if conf_matrix.sum() else 0.0
 
-                # Calculate accuracy
-                acc += torch.eq(predict_y, val_labels.to(device)).sum().item()
-        
-        # Calculate metrics
-        val_accurate = acc / len(test_loader.dataset)
-        precision = precision_score(all_labels, all_preds, average='weighted')
-        recall = recall_score(all_labels, all_preds, average='weighted')  # Sensitivity
-        f1 = f1_score(all_labels, all_preds, average='weighted')
-        
-        # Confusion Matrix for multi-class
-        conf_matrix = confusion_matrix(all_labels, all_preds)
-        specificity = specificity_per_class(conf_matrix)  # List of specificities per class
-        avg_specificity = sum(specificity) / len(specificity)  # Average specificity
+        history_train_losses.append(running_loss / len(train_loader))
+        history_val_losses.append(val_loss)
+        history_val_accs.append(val_acc)
+        history_val_aucs.append(auc)
 
-        # Overall Accuracy calculation
-        overall_acc = overall_accuracy(conf_matrix)
+        metrics_plot_path = os.path.join(output_dir, 'training_metrics_plot.png')
+        confusion_plot_path = os.path.join(output_dir, f'confusion_matrix_epoch_{epoch + 1:03d}.png')
+        gradcam_path = os.path.join(output_dir, f'gradcam_epoch_{epoch + 1:03d}.png')
 
-        # One-hot encode the labels for AUC calculation
-        n_classes = len(conf_matrix)
-        all_labels_one_hot = label_binarize(all_labels, classes=list(range(n_classes)))
+        plot_training_curves(history_train_losses, history_val_losses, history_val_accs, history_val_aucs, metrics_plot_path)
+        plot_confusion_matrix(conf_matrix, class_names, confusion_plot_path, normalize=True)
 
-        try:
-            # Compute AUC for multi-class
-            auc = roc_auc_score(all_labels_one_hot, all_probs, multi_class='ovr')
-        except ValueError:
-            auc = float('nan')  # Handle edge case where AUC can't be computed
-
-        # Print metrics
-        print(f'[epoch {epoch + 1}] train_loss: {running_loss / len(train_loader):.3f} '
-              f'val_accuracy: {val_accurate:.4f} precision: {precision:.4f} '
+        print(f'[epoch {epoch + 1}] train_loss: {history_train_losses[-1]:.3f} '
+              f'val_loss: {val_loss:.3f} val_accuracy: {val_acc:.4f} precision: {precision:.4f} '
               f'recall: {recall:.4f} specificity: {avg_specificity:.4f} '
               f'f1_score: {f1:.4f} auc: {auc:.4f} overall_accuracy: {overall_acc:.4f}')
         
         #print(f'lr: {scheduler.get_last_lr()[-1]:.8f}')
         
         # Save best model
-        if val_accurate > best_acc:
+        if val_acc > best_acc:
             print('\nSaving checkpoint...')
-            best_acc = val_accurate
+            best_acc = val_acc
             state = {
                 'model': net.state_dict(),
                 'optimizer': optimizer.state_dict(),
@@ -222,6 +369,7 @@ def train_other(epochs, net, train_loader, test_loader, optimizer, scheduler, lo
                 'epoch': epoch,
             }
             torch.save(state, save_path)
+            save_gradcam_for_misclassified_sample(net, test_loader, device, class_names, gradcam_path)
 
     print('Finished Training')
 
@@ -249,6 +397,9 @@ def main(args):
     lr = args.lr
     
     train_dataset, test_dataset, nb_classes = build_dataset(args=args)
+    class_names = get_class_names(train_dataset)
+    if len(class_names) != nb_classes:
+        class_names = [str(idx) for idx in range(nb_classes)]
     val_num = len(test_dataset)
     train_num = len(train_dataset)
     
@@ -292,6 +443,7 @@ def main(args):
     epochs = args.epochs
     best_acc = 0.0
     save_path = f'./{model_name}_{dataset_name}.pth'
+    output_dir = os.path.join('.', 'analysis_outputs')
     train_steps = len(train_loader)
 
     if dataset_name.endswith('mnist'):
@@ -300,7 +452,7 @@ def main(args):
         optimizer, scheduler, loss_function, device, save_path, dataset_name, task)
     else:
         train_other(epochs, net, train_loader, test_loader,
-        optimizer, scheduler, loss_function, device, save_path)
+        optimizer, scheduler, loss_function, device, save_path, class_names, output_dir)
 
 
 if __name__ == '__main__':
