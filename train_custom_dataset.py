@@ -122,6 +122,7 @@ def main(args):
     # Training loop
     print("\nStarting training...")
     best_acc = 0.0
+    epochs_without_improvement = 0
     
     for epoch in range(args.epochs):
         # Train phase
@@ -139,7 +140,7 @@ def main(args):
             optimizer.zero_grad()
             outputs = model(images)
             loss = criterion(outputs, labels)
-            
+
             # Backward pass
             loss.backward()
             optimizer.step()
@@ -195,6 +196,7 @@ def main(args):
         # Save checkpoint if best accuracy
         if test_acc > best_acc:
             best_acc = test_acc
+            epochs_without_improvement = 0
             print(f"  -> Saving best checkpoint (acc: {best_acc:.2f}%)")
             
             checkpoint = {
@@ -207,6 +209,15 @@ def main(args):
                 'classes': train_dataset.classes,
             }
             torch.save(checkpoint, args.checkpoint_path)
+        else:
+            epochs_without_improvement += 1
+
+        if args.patience is not None and epochs_without_improvement >= args.patience:
+            print(
+                f"\nEarly stopping triggered after {args.patience} epoch(s) without improvement. "
+                f"Best test accuracy: {best_acc:.2f}%"
+            )
+            break
     
     print(f"\nTraining completed!")
     print(f"Best test accuracy: {best_acc:.2f}%")
@@ -263,6 +274,13 @@ def parse_args():
         default='./checkpoint/medvit_custom.pth',
         help='Path to save model checkpoint'
     )
+
+    parser.add_argument(
+        '--patience',
+        type=int,
+        default=10,
+        help='Stop training if test accuracy does not improve for this many epochs. Set to 0 or a negative value to disable early stopping.'
+    )
     
     return parser.parse_args()
 
@@ -280,5 +298,8 @@ if __name__ == '__main__':
     print(f"Epochs: {args.epochs}")
     print(f"Checkpoint: {args.checkpoint_path}")
     print("="*70 + "\n")
+
+    if args.patience is not None and args.patience <= 0:
+        args.patience = None
     
     best_acc = main(args)
