@@ -15,9 +15,46 @@ from sklearn.metrics import confusion_matrix
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from MedViT import MedViT_base
+from MedViT import MedViT_tiny, MedViT_small, MedViT_base, MedViT_large
 from datasets import CustomDataset, build_transform
 from confusion_gradcam import analyze_confusion_pair
+
+
+MODEL_CLASSES = {
+    'MedViT_tiny': MedViT_tiny,
+    'MedViT_small': MedViT_small,
+    'MedViT_base': MedViT_base,
+    'MedViT_large': MedViT_large,
+}
+
+
+def extract_state_dict(checkpoint):
+    if 'model_state_dict' in checkpoint:
+        return checkpoint['model_state_dict']
+    if 'model' in checkpoint:
+        return checkpoint['model']
+    return checkpoint
+
+
+def detect_model_name(checkpoint, state_dict, num_classes, device):
+    saved_name = checkpoint.get('model_name')
+    candidate_names = []
+    for candidate in [saved_name, *MODEL_CLASSES.keys()]:
+        if candidate and candidate not in candidate_names:
+            candidate_names.append(candidate)
+
+    for candidate_name in candidate_names:
+        model = MODEL_CLASSES[candidate_name](num_classes=num_classes)
+        try:
+            model.load_state_dict(state_dict)
+            return candidate_name, model.to(device).eval()
+        except RuntimeError:
+            continue
+
+    raise RuntimeError(
+        "Could not match the checkpoint to any supported MedViT variant. "
+        "Make sure the checkpoint was saved with one of the MedViT_* architectures."
+    )
 
 
 def main():
@@ -29,18 +66,15 @@ def main():
     
     # Load model
     checkpoint_path = './checkpoint_best.pth'
-    model_name = 'MedViT_base'
     dataset_dir = './dataset'
     
     checkpoint = torch.load(checkpoint_path, map_location=device)
-    num_classes = checkpoint['num_classes']
-    class_names = checkpoint['classes']
-    
-    model = MedViT_base(num_classes=num_classes)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model = model.to(device)
-    model.eval()
-    
+    state_dict = extract_state_dict(checkpoint)
+    num_classes = checkpoint.get('num_classes', 6)
+    class_names = checkpoint.get('classes', [f'class_{i}' for i in range(num_classes)])
+
+    model_name, model = detect_model_name(checkpoint, state_dict, num_classes, device)
+
     print(f"Loaded {model_name}: {num_classes} classes")
     print(f"Classes: {class_names}\n")
     
@@ -69,7 +103,8 @@ def main():
     misclassifications = []
     
     with torch.no_grad():
-        for batch_idx, (images, labels) in enumerate(test_loader):
+        sample_index = 0
+        for images, labels in test_loader:
             images = images.to(device)
             outputs = model(images)
             preds = torch.argmax(outputs, dim=1)
@@ -80,8 +115,7 @@ def main():
             # Track misclassifications
             for i, (pred, target) in enumerate(zip(preds, labels)):
                 if pred.item() != target.item():
-                    # Calculate the image index in the dataset
-                    img_idx = batch_idx * test_loader.batch_size + i
+                    img_idx = sample_index + i
                     img_id = test_dataset.samples.iloc[img_idx]['img_id']
                     
                     misclassifications.append({
@@ -91,6 +125,8 @@ def main():
                         'img_id': img_id,
                         'confidence': outputs[i, pred.item()].item()
                     })
+
+                    sample_index += len(labels)
     
     all_preds = np.array(all_preds)
     all_targets = np.array(all_targets)

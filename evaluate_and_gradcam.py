@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.metrics import confusion_matrix, accuracy_score, precision_score, recall_score, f1_score
+from sklearn.metrics import confusion_matrix, accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -82,6 +82,8 @@ def evaluate_model(model, test_loader, device='cuda'):
     all_preds = []
     all_targets = []
     all_probs = []
+    running_loss = 0.0
+    criterion = nn.CrossEntropyLoss()
     
     with torch.no_grad():
         for images, labels in test_loader:
@@ -89,6 +91,8 @@ def evaluate_model(model, test_loader, device='cuda'):
             labels = labels.to(device)
             
             outputs = model(images)
+            loss = criterion(outputs, labels)
+            running_loss += loss.item() * images.size(0)
             probs = torch.softmax(outputs, dim=1)
             preds = torch.argmax(outputs, dim=1)
             
@@ -99,6 +103,7 @@ def evaluate_model(model, test_loader, device='cuda'):
     all_preds = np.array(all_preds)
     all_targets = np.array(all_targets)
     all_probs = np.array(all_probs)
+    test_loss = running_loss / len(test_loader.dataset)
     
     # Compute confusion matrix and metrics
     cm = confusion_matrix(all_targets, all_preds)
@@ -106,8 +111,47 @@ def evaluate_model(model, test_loader, device='cuda'):
     precision = precision_score(all_targets, all_preds, average='weighted', zero_division=0)
     recall = recall_score(all_targets, all_preds, average='weighted', zero_division=0)
     f1 = f1_score(all_targets, all_preds, average='weighted', zero_division=0)
+
+    try:
+        if all_probs.shape[1] == 2:
+            auc = roc_auc_score(all_targets, all_probs[:, 1])
+        else:
+            auc = roc_auc_score(all_targets, all_probs, multi_class='ovr')
+    except ValueError:
+        auc = 0.0
     
-    return all_preds, all_targets, all_probs, cm, accuracy, precision, recall, f1
+    return all_preds, all_targets, all_probs, cm, test_loss, accuracy, precision, recall, f1, auc
+
+
+def plot_test_metrics(test_losses, test_accs, test_aucs, output_path):
+    """Plot test loss, accuracy, and AUC."""
+    epochs = range(1, len(test_losses) + 1)
+    plt.figure(figsize=(15, 5))
+
+    plt.subplot(1, 3, 1)
+    plt.plot(epochs, test_losses, label='Test Loss', color='tab:blue')
+    plt.title('Test Loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+
+    plt.subplot(1, 3, 2)
+    plt.plot(epochs, test_accs, label='Test Acc', color='green')
+    plt.title('Test Accuracy')
+    plt.xlabel('Epochs')
+    plt.ylabel('Accuracy')
+    plt.legend()
+
+    plt.subplot(1, 3, 3)
+    plt.plot(epochs, test_aucs, label='Test AUC', color='red')
+    plt.title('Test AUC')
+    plt.xlabel('Epochs')
+    plt.ylabel('AUC')
+    plt.legend()
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=200, bbox_inches='tight')
+    plt.close()
 
 
 def plot_confusion_matrix(cm, class_names, figsize=(10, 8)):
@@ -264,14 +308,16 @@ def main(args):
     
     # Evaluate model
     print("Evaluating model on test set...")
-    preds, targets, probs, cm, accuracy, precision, recall, f1 = evaluate_model(
+    preds, targets, probs, cm, test_loss, accuracy, precision, recall, f1, auc = evaluate_model(
         model, test_loader, device
     )
     
+    print(f"Test Loss: {test_loss:.4f}")
     print(f"Test Accuracy: {accuracy:.4f}")
     print(f"Precision (weighted): {precision:.4f}")
     print(f"Recall (weighted): {recall:.4f}")
     print(f"F1-Score (weighted): {f1:.4f}\n")
+    print(f"Test AUC: {auc:.4f}\n")
     
     # Display confusion matrix
     print("="*70)
@@ -286,6 +332,10 @@ def main(args):
     cm_path = os.path.join(output_dir, 'confusion_matrix.png')
     fig.savefig(cm_path, dpi=150, bbox_inches='tight')
     print(f"Confusion matrix saved to: {cm_path}")
+
+    metrics_path = os.path.join(output_dir, 'test_metrics.png')
+    plot_test_metrics([test_loss], [accuracy], [auc], metrics_path)
+    print(f"Test metrics plot saved to: {metrics_path}")
     
     plt.show()
     

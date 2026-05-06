@@ -147,28 +147,28 @@ def get_class_names(dataset):
     return []
 
 
-def plot_training_curves(train_losses, val_losses, val_accs, val_aucs, output_path):
+def plot_training_curves(train_losses, test_losses, test_accs, test_aucs, output_path):
     epochs = range(1, len(train_losses) + 1)
     plt.figure(figsize=(15, 5))
 
     plt.subplot(1, 3, 1)
     plt.plot(epochs, train_losses, label='Train Loss')
-    plt.plot(epochs, val_losses, label='Val Loss')
-    plt.title('Training & Validation Loss')
+    plt.plot(epochs, test_losses, label='Test Loss')
+    plt.title('Training & Test Loss')
     plt.xlabel('Epochs')
     plt.ylabel('Loss')
     plt.legend()
 
     plt.subplot(1, 3, 2)
-    plt.plot(epochs, val_accs, label='Val Acc', color='green')
-    plt.title('Validation Accuracy')
+    plt.plot(epochs, test_accs, label='Test Acc', color='green')
+    plt.title('Test Accuracy')
     plt.xlabel('Epochs')
     plt.ylabel('Accuracy')
     plt.legend()
 
     plt.subplot(1, 3, 3)
-    plt.plot(epochs, val_aucs, label='Val AUC', color='red')
-    plt.title('Validation AUC')
+    plt.plot(epochs, test_aucs, label='Test AUC', color='red')
+    plt.title('Test AUC')
     plt.xlabel('Epochs')
     plt.ylabel('AUC')
     plt.legend()
@@ -303,9 +303,9 @@ def evaluate_with_metrics(model, loader, n_classes, criterion, device):
 def train_other(epochs, net, train_loader, test_loader, optimizer, scheduler, loss_function, device, save_path, class_names, output_dir):
     best_acc = 0.0
     history_train_losses = []
-    history_val_losses = []
-    history_val_accs = []
-    history_val_aucs = []
+    history_test_losses = []
+    history_test_accs = []
+    history_test_aucs = []
 
     os.makedirs(output_dir, exist_ok=True)
     
@@ -327,7 +327,7 @@ def train_other(epochs, net, train_loader, test_loader, optimizer, scheduler, lo
 
             train_bar.desc = f"train epoch[{epoch + 1}/{epochs}] loss:{loss:.3f}"
         
-        val_loss, val_acc, auc, conf_matrix, preds_classes, all_labels = evaluate_with_metrics(
+        test_loss, test_acc, auc, conf_matrix, preds_classes, all_labels = evaluate_with_metrics(
             net, test_loader, len(class_names), loss_function, device
         )
 
@@ -339,28 +339,28 @@ def train_other(epochs, net, train_loader, test_loader, optimizer, scheduler, lo
         overall_acc = overall_accuracy(conf_matrix) if conf_matrix.sum() else 0.0
 
         history_train_losses.append(running_loss / len(train_loader))
-        history_val_losses.append(val_loss)
-        history_val_accs.append(val_acc)
-        history_val_aucs.append(auc)
+        history_test_losses.append(test_loss)
+        history_test_accs.append(test_acc)
+        history_test_aucs.append(auc)
 
         metrics_plot_path = os.path.join(output_dir, 'training_metrics_plot.png')
         confusion_plot_path = os.path.join(output_dir, f'confusion_matrix_epoch_{epoch + 1:03d}.png')
         gradcam_path = os.path.join(output_dir, f'gradcam_epoch_{epoch + 1:03d}.png')
 
-        plot_training_curves(history_train_losses, history_val_losses, history_val_accs, history_val_aucs, metrics_plot_path)
+        plot_training_curves(history_train_losses, history_test_losses, history_test_accs, history_test_aucs, metrics_plot_path)
         plot_confusion_matrix(conf_matrix, class_names, confusion_plot_path, normalize=True)
 
         print(f'[epoch {epoch + 1}] train_loss: {history_train_losses[-1]:.3f} '
-              f'val_loss: {val_loss:.3f} val_accuracy: {val_acc:.4f} precision: {precision:.4f} '
+              f'test_loss: {test_loss:.3f} test_accuracy: {test_acc:.4f} precision: {precision:.4f} '
               f'recall: {recall:.4f} specificity: {avg_specificity:.4f} '
               f'f1_score: {f1:.4f} auc: {auc:.4f} overall_accuracy: {overall_acc:.4f}')
         
         #print(f'lr: {scheduler.get_last_lr()[-1]:.8f}')
         
         # Save best model
-        if val_acc > best_acc:
+        if test_acc > best_acc:
             print('\nSaving checkpoint...')
-            best_acc = val_acc
+            best_acc = test_acc
             state = {
                 'model': net.state_dict(),
                 'optimizer': optimizer.state_dict(),

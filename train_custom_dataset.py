@@ -23,6 +23,9 @@ import argparse
 import sys
 import os
 from pathlib import Path
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.metrics import roc_auc_score
 
 # Add parent directory to path to import modules
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -30,6 +33,38 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from datasets import CustomDataset, build_transform
 from MedViT import MedViT_tiny, MedViT_small, MedViT_base, MedViT_large
 from tqdm import tqdm
+
+
+def plot_training_curves(train_losses, test_losses, test_accs, test_aucs, output_path):
+    """Plot train/test loss, test accuracy, and test AUC."""
+    epochs = range(1, len(train_losses) + 1)
+    plt.figure(figsize=(15, 5))
+
+    plt.subplot(1, 3, 1)
+    plt.plot(epochs, train_losses, label='Train Loss')
+    plt.plot(epochs, test_losses, label='Test Loss')
+    plt.title('Training & Test Loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+
+    plt.subplot(1, 3, 2)
+    plt.plot(epochs, test_accs, label='Test Acc', color='green')
+    plt.title('Test Accuracy')
+    plt.xlabel('Epochs')
+    plt.ylabel('Accuracy')
+    plt.legend()
+
+    plt.subplot(1, 3, 3)
+    plt.plot(epochs, test_aucs, label='Test AUC', color='red')
+    plt.title('Test AUC')
+    plt.xlabel('Epochs')
+    plt.ylabel('AUC')
+    plt.legend()
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=200, bbox_inches='tight')
+    plt.close()
 
 
 def main(args):
@@ -123,6 +158,10 @@ def main(args):
     print("\nStarting training...")
     best_acc = 0.0
     epochs_without_improvement = 0
+    history_train_losses = []
+    history_test_losses = []
+    history_test_accs = []
+    history_test_aucs = []
     
     for epoch in range(args.epochs):
         # Train phase
@@ -163,6 +202,8 @@ def main(args):
         test_loss = 0.0
         test_correct = 0
         test_total = 0
+        test_probs = []
+        test_targets = []
         
         test_bar = tqdm(test_loader, desc=f"Epoch {epoch+1}/{args.epochs} [Test]")
         with torch.no_grad():
@@ -177,6 +218,8 @@ def main(args):
                 _, predicted = torch.max(outputs.data, 1)
                 test_total += labels.size(0)
                 test_correct += (predicted == labels).sum().item()
+                test_probs.append(torch.softmax(outputs, dim=1).cpu().numpy())
+                test_targets.append(labels.cpu().numpy())
                 
                 test_bar.set_postfix(
                     loss=test_loss / (test_bar.n + 1),
@@ -188,10 +231,29 @@ def main(args):
         test_acc = 100 * test_correct / test_total
         avg_train_loss = train_loss / len(train_loader)
         avg_test_loss = test_loss / len(test_loader)
+
+        test_probs = np.concatenate(test_probs, axis=0)
+        test_targets = np.concatenate(test_targets, axis=0)
+        try:
+            if test_probs.shape[1] == 2:
+                test_auc = roc_auc_score(test_targets, test_probs[:, 1])
+            else:
+                test_auc = roc_auc_score(test_targets, test_probs, multi_class='ovr')
+        except ValueError:
+            test_auc = 0.0
+
+        history_train_losses.append(avg_train_loss)
+        history_test_losses.append(avg_test_loss)
+        history_test_accs.append(test_acc / 100.0)
+        history_test_aucs.append(test_auc)
         
         print(f"\nEpoch {epoch+1}/{args.epochs}:")
         print(f"  Train Loss: {avg_train_loss:.4f}, Train Acc: {train_acc:.2f}%")
         print(f"  Test Loss:  {avg_test_loss:.4f}, Test Acc:  {test_acc:.2f}%")
+        print(f"  Test AUC:   {test_auc:.4f}")
+
+        metrics_plot_path = os.path.join(os.path.dirname(args.checkpoint_path) or '.', 'training_metrics_plot.png')
+        plot_training_curves(history_train_losses, history_test_losses, history_test_accs, history_test_aucs, metrics_plot_path)
         
         # Save checkpoint if best accuracy
         if test_acc > best_acc:
