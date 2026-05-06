@@ -207,6 +207,7 @@ def main(args):
                 'best_acc': best_acc,
                 'num_classes': num_classes,
                 'classes': train_dataset.classes,
+                'model_name': args.model_name,
             }
             torch.save(checkpoint, args.checkpoint_path)
         else:

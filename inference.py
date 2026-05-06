@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from MedViT import MedViT_tiny, MedViT_small, MedViT_base, MedViT_large
 
 
-def load_model(checkpoint_path, device='cuda'):
+def load_model(checkpoint_path, model_name='MedViT_small', device='cuda'):
     """Load trained model from checkpoint."""
     
     if not os.path.exists(checkpoint_path):
@@ -44,13 +44,23 @@ def load_model(checkpoint_path, device='cuda'):
     classes = checkpoint.get('classes', [f'class_{i}' for i in range(num_classes)])
     
     print(f"Loading model...")
+    print(f"  - Model: {model_name}")
     print(f"  - Number of classes: {num_classes}")
     print(f"  - Classes: {classes}")
     print(f"  - Best accuracy during training: {checkpoint.get('best_acc', 'N/A')}")
     
-    # Initialize model - infer model size from number of parameters
-    # For now, use MedViT_small as default
-    model = MedViT_small(num_classes=num_classes)
+    # Initialize model
+    model_classes = {
+        'MedViT_tiny': MedViT_tiny,
+        'MedViT_small': MedViT_small,
+        'MedViT_base': MedViT_base,
+        'MedViT_large': MedViT_large
+    }
+    
+    if model_name not in model_classes:
+        raise ValueError(f"Unknown model: {model_name}. Available: {list(model_classes.keys())}")
+    
+    model = model_classes[model_name](num_classes=num_classes)
     
     # Load weights
     model.load_state_dict(checkpoint['model_state_dict'])
@@ -96,7 +106,7 @@ def main(args):
     print(f"Using device: {device}\n")
     
     # Load model
-    model, classes = load_model(args.checkpoint, device)
+    model, classes = load_model(args.checkpoint, args.model_name, device)
     
     # Get transforms
     transform = get_transform()
@@ -180,6 +190,14 @@ def parse_args():
         type=str,
         required=True,
         help='Path to trained model checkpoint'
+    )
+    
+    parser.add_argument(
+        '--model_name',
+        type=str,
+        default='MedViT_small',
+        choices=['MedViT_tiny', 'MedViT_small', 'MedViT_base', 'MedViT_large'],
+        help='Model architecture (must match the checkpoint)'
     )
     
     parser.add_argument(
