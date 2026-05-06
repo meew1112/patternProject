@@ -32,24 +32,48 @@ MODEL_CLASSES = {
 }
 
 
+def _extract_state_dict(checkpoint):
+    if 'model_state_dict' in checkpoint:
+        return checkpoint['model_state_dict']
+    if 'model' in checkpoint:
+        return checkpoint['model']
+    return checkpoint
+
+
 def load_model(checkpoint_path, model_name, num_classes, device='cuda'):
     """Load trained model from checkpoint."""
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
-    
-    if model_name not in MODEL_CLASSES:
-        raise ValueError(f"Unknown model: {model_name}. Available: {list(MODEL_CLASSES.keys())}")
-    
-    # Initialize model
-    model = MODEL_CLASSES[model_name](num_classes=num_classes)
-    
-    # Load checkpoint
+
     checkpoint = torch.load(checkpoint_path, map_location=device)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model = model.to(device)
-    model.eval()
-    
-    return model
+    state_dict = _extract_state_dict(checkpoint)
+    saved_model_name = checkpoint.get('model_name')
+
+    candidate_names = []
+    for candidate in [saved_model_name, model_name, *MODEL_CLASSES.keys()]:
+        if candidate and candidate not in candidate_names:
+            candidate_names.append(candidate)
+
+    last_error = None
+    for candidate_name in candidate_names:
+        if candidate_name not in MODEL_CLASSES:
+            continue
+
+        model = MODEL_CLASSES[candidate_name](num_classes=num_classes)
+        try:
+            model.load_state_dict(state_dict)
+            if saved_model_name and saved_model_name != model_name:
+                print(f"Checkpoint specifies {saved_model_name}; using it instead of --model_name {model_name}.")
+            elif candidate_name != model_name:
+                print(f"Using {candidate_name} because it matches the checkpoint.")
+            return model.to(device).eval()
+        except RuntimeError as exc:
+            last_error = exc
+
+    raise RuntimeError(
+        "Could not match checkpoint weights to any MedViT variant. "
+        f"Last error: {last_error}"
+    )
 
 
 def evaluate_model(model, test_loader, device='cuda'):
