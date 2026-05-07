@@ -18,7 +18,7 @@ Or with custom arguments:
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 import argparse
 import sys
 import os
@@ -26,6 +26,7 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.metrics import roc_auc_score
+from collections import Counter
 
 # Add parent directory to path to import modules
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -109,11 +110,27 @@ def main(args):
     print(f"Training samples: {len(train_dataset)}")
     print(f"Test samples: {len(test_dataset)}")
     
-    # Create data loaders
+    # Compute class weights for handling class imbalance
+    print("\nComputing class weights for imbalanced data...")
+    labels = [train_dataset.class_to_idx[row['diagnostic']] for _, row in train_dataset.samples.iterrows()]
+    counts = Counter(labels)
+    class_sample_count = np.array([counts.get(i, 1) for i in range(num_classes)])
+    print(f"Class distribution: {dict(zip(train_dataset.classes, class_sample_count))}")
+    
+    # For weighted loss: inverse frequency
+    class_weights = torch.tensor(class_sample_count.max() / class_sample_count, dtype=torch.float).to(device)
+    print(f"Class weights (for loss): {class_weights.cpu().numpy()}")
+    
+    # For weighted sampler: per-sample weight = 1 / count[label]
+    sample_weights = np.array([1.0 / class_sample_count[label] for label in labels])
+    sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
+    print(f"Using WeightedRandomSampler to oversample minority classes.\n")
+    
+    # Create data loaders (train uses sampler, no shuffle)
     train_loader = DataLoader(
         train_dataset, 
         batch_size=args.batch_size, 
-        shuffle=True, 
+        sampler=sampler,
         num_workers=4,
         pin_memory=True
     )
@@ -142,8 +159,8 @@ def main(args):
     model = model_class(num_classes=num_classes)
     model = model.to(device)
     
-    # Loss function and optimizer
-    criterion = nn.CrossEntropyLoss()
+    # Loss function (with class weights) and optimizer
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(
         optimizer, 
@@ -343,6 +360,13 @@ def parse_args():
         type=int,
         default=10,
         help='Stop training if test accuracy does not improve for this many epochs. Set to 0 or a negative value to disable early stopping.'
+    )
+    
+    parser.add_argument(
+        '--use_augment',
+        type=lambda x: x.lower() in ('true', '1', 'yes'),
+        default=True,
+        help='Use strong augmentations (albumentations) for training data.'
     )
     
     return parser.parse_args()
