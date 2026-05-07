@@ -231,8 +231,38 @@ def analyze_confusion_pair(
 
         output_file = None
         if save_path is not None:
+            # Build a composite image: [ original | cam_overlay ] + text area
+            orig_resized = image.resize((224, 224)).convert("RGB")
+            cam_pil = Image.fromarray(cam_image).convert("RGB")
+
+            text_height = 40
+            canvas_w = 224 * 2
+            canvas_h = 224 + text_height
+            canvas = Image.new("RGB", (canvas_w, canvas_h), color=(255, 255, 255))
+            canvas.paste(orig_resized, (0, 0))
+            canvas.paste(cam_pil, (224, 0))
+
+            # Draw labels
+            from PIL import ImageDraw, ImageFont
+
+            draw = ImageDraw.Draw(canvas)
+            try:
+                font = ImageFont.load_default()
+            except Exception:
+                font = None
+
+            true_text = f"True: {label_names[true_class]}"
+            pred_label_name = label_names[predicted_idx] if 0 <= predicted_idx < len(label_names) else str(predicted_idx)
+            pred_text = f"Pred: {pred_label_name} ({confidence:.2f})"
+
+            # Position text centered in the bottom area
+            x_margin = 10
+            y_text = 224 + 8
+            draw.text((x_margin, y_text), true_text, fill=(0, 0, 0), font=font)
+            draw.text((canvas_w // 2 + x_margin, y_text), pred_text, fill=(0, 0, 0), font=font)
+
             output_file = save_path / f"{label_names[true_class]}_to_{label_names[pred_class]}_{index:02d}.png"
-            Image.fromarray(cam_image).save(output_file)
+            canvas.save(output_file)
 
         results.append(
             {
