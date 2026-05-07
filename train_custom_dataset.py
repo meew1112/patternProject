@@ -88,12 +88,19 @@ def main(args):
     if not os.path.exists(metadata_csv):
         raise FileNotFoundError(f"Metadata CSV not found: {metadata_csv}")
     
-    # Load train and test datasets
+    # Load train, val, and test datasets
     train_dataset = CustomDataset(
         dataset_dir, 
         metadata_csv, 
         split='train', 
         transform=train_transform
+    )
+    
+    val_dataset = CustomDataset(
+        dataset_dir, 
+        metadata_csv, 
+        split='val', 
+        transform=test_transform
     )
     
     test_dataset = CustomDataset(
@@ -108,13 +115,47 @@ def main(args):
     print(f"\nNumber of classes: {num_classes}")
     print(f"Classes: {train_dataset.classes}")
     print(f"Training samples: {len(train_dataset)}")
+    print(f"Validation samples: {len(val_dataset)}")
     print(f"Test samples: {len(test_dataset)}")
+    
+    # Compute class weights for handling class imbalance
+    print("\nComputing class weights for imbalanced data...")
+    labels = [train_dataset.class_to_idx[row['diagnostic']] for _, row in train_dataset.samples.iterrows()]
+    from collections import Counter
+    counts = Counter(labels)
+    class_sample_count = np.array([counts.get(i, 1) for i in range(num_classes)])
+    print(f"Class distribution: {dict(zip(train_dataset.classes, class_sample_count))}")
+    
+    # For weighted loss: inverse frequency
+    class_weights = torch.tensor(class_sample_count.max() / class_sample_count, dtype=torch.float).to(device)
+    print(f"Class weights (for loss): {class_weights.cpu().numpy()}")
+    
+    # For weighted sampler: per-sample weight = 1 / count[label]
+    sample_weights = np.array([1.0 / class_sample_count[label] for label in labels])
+    sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
+    print(f"Using WeightedRandomSampler to oversample minority classes.\n")
     
     # Create data loaders
     train_loader = DataLoader(
         train_dataset, 
         batch_size=args.batch_size, 
-        shuffle=True, 
+        sampler=sampler,
+        num_workers=4,
+        pin_memory=True
+    )
+    
+    val_loader = DataLoader(
+        val_dataset, 
+        batch_size=args.batch_size, 
+        shuffle=False, 
+        num_workers=4,
+        pin_memory=True
+    )
+    
+    test_loader = DataLoader(
+        test_dataset, 
+        batch_size=args.batch_size, 
+        shuffle=False, 
         num_workers=4,
         pin_memory=True
     )
@@ -143,8 +184,8 @@ def main(args):
     model = model_class(num_classes=num_classes)
     model = model.to(device)
     
-    # Loss function and optimizer
-    criterion = nn.CrossEntropyLoss()
+    # Loss function (with class weights) and optimizer
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(
         optimizer, 
@@ -160,9 +201,9 @@ def main(args):
     best_acc = 0.0
     epochs_without_improvement = 0
     history_train_losses = []
-    history_test_losses = []
-    history_test_accs = []
-    history_test_aucs = []
+    history_val_losses = []
+    history_val_accs = []
+    history_val_aucs = []
     
     for epoch in range(args.epochs):
         # Train phase
@@ -198,69 +239,69 @@ def main(args):
         
         scheduler.step()
         
-        # Test phase
+        # Validation phase (on val set during training)
         model.eval()
-        test_loss = 0.0
-        test_correct = 0
-        test_total = 0
-        test_probs = []
-        test_targets = []
+        val_loss = 0.0
+        val_correct = 0
+        val_total = 0
+        val_probs = []
+        val_targets = []
         
-        test_bar = tqdm(test_loader, desc=f"Epoch {epoch+1}/{args.epochs} [Test]")
+        val_bar = tqdm(val_loader, desc=f"Epoch {epoch+1}/{args.epochs} [Val]")
         with torch.no_grad():
-            for images, labels in test_bar:
+            for images, labels in val_bar:
                 images = images.to(device)
                 labels = labels.to(device)
                 
                 outputs = model(images)
                 loss = criterion(outputs, labels)
                 
-                test_loss += loss.item()
+                val_loss += loss.item()
                 _, predicted = torch.max(outputs.data, 1)
-                test_total += labels.size(0)
-                test_correct += (predicted == labels).sum().item()
-                test_probs.append(torch.softmax(outputs, dim=1).cpu().numpy())
-                test_targets.append(labels.cpu().numpy())
+                val_total += labels.size(0)
+                val_correct += (predicted == labels).sum().item()
+                val_probs.append(torch.softmax(outputs, dim=1).cpu().numpy())
+                val_targets.append(labels.cpu().numpy())
                 
-                test_bar.set_postfix(
-                    loss=test_loss / (test_bar.n + 1),
-                    acc=100 * test_correct / test_total
+                val_bar.set_postfix(
+                    loss=val_loss / (val_bar.n + 1),
+                    acc=100 * val_correct / val_total
                 )
         
         # Calculate accuracies
         train_acc = 100 * train_correct / train_total
-        test_acc = 100 * test_correct / test_total
+        val_acc = 100 * val_correct / val_total
         avg_train_loss = train_loss / len(train_loader)
-        avg_test_loss = test_loss / len(test_loader)
+        avg_val_loss = val_loss / len(val_loader)
 
-        test_probs = np.concatenate(test_probs, axis=0)
-        test_targets = np.concatenate(test_targets, axis=0)
+        val_probs = np.concatenate(val_probs, axis=0)
+        val_targets = np.concatenate(val_targets, axis=0)
         try:
-            if test_probs.shape[1] == 2:
-                test_auc = roc_auc_score(test_targets, test_probs[:, 1])
+            if val_probs.shape[1] == 2:
+                val_auc = roc_auc_score(val_targets, val_probs[:, 1])
             else:
-                test_auc = roc_auc_score(test_targets, test_probs, multi_class='ovr')
+                val_auc = roc_auc_score(val_targets, val_probs, multi_class='ovr')
         except ValueError:
-            test_auc = 0.0
+            val_auc = 0.0
 
         history_train_losses.append(avg_train_loss)
-        history_test_losses.append(avg_test_loss)
-        history_test_accs.append(test_acc / 100.0)
-        history_test_aucs.append(test_auc)
+        history_val_losses.append(avg_val_loss)
+        history_val_accs.append(val_acc / 100.0)
+        history_val_aucs.append(val_auc)
         
         print(f"\nEpoch {epoch+1}/{args.epochs}:")
         print(f"  Train Loss: {avg_train_loss:.4f}, Train Acc: {train_acc:.2f}%")
-        print(f"  Test Loss:  {avg_test_loss:.4f}, Test Acc:  {test_acc:.2f}%")
-        print(f"  Test AUC:   {test_auc:.4f}")
+        print(f"  Val Loss:   {avg_val_loss:.4f}, Val Acc:   {val_acc:.2f}%")
+        print(f"  Val AUC:    {val_auc:.4f}")
 
         metrics_plot_path = os.path.join(os.path.dirname(args.checkpoint_path) or '.', 'training_metrics_plot.png')
-        plot_training_curves(history_train_losses, history_test_losses, history_test_accs, history_test_aucs, metrics_plot_path)
+        plot_training_curves(history_train_losses, history_val_losses, history_val_accs, history_val_aucs, metrics_plot_path)
         
-        # Save checkpoint if best accuracy
-        if test_acc > best_acc:
-            best_acc = test_acc
+        # Save checkpoint if best val accuracy
+        if val_acc > best_acc:
+            best_acc = val_acc
             epochs_without_improvement = 0
-            print(f"  -> Saving best checkpoint (acc: {best_acc:.2f}%)")
+            print(f"  -> Saving best checkpoint (val_acc: {best_acc:.2f}%)")
             
             checkpoint = {
                 'epoch': epoch,
@@ -279,13 +320,51 @@ def main(args):
         if args.patience is not None and epochs_without_improvement >= args.patience:
             print(
                 f"\nEarly stopping triggered after {args.patience} epoch(s) without improvement. "
-                f"Best test accuracy: {best_acc:.2f}%"
+                f"Best val accuracy: {best_acc:.2f}%"
             )
             break
     
     print(f"\nTraining completed!")
-    print(f"Best test accuracy: {best_acc:.2f}%")
+    print(f"Best val accuracy: {best_acc:.2f}%")
     print(f"Model saved to: {args.checkpoint_path}")
+    
+    # Final evaluation on test set
+    print("\n" + "="*70)
+    print("FINAL EVALUATION ON TEST SET")
+    print("="*70)
+    model.load_state_dict(torch.load(args.checkpoint_path)['model_state_dict'])
+    model.eval()
+    test_correct = 0
+    test_total = 0
+    test_probs = []
+    test_targets = []
+    
+    with torch.no_grad():
+        for images, labels in tqdm(test_loader, desc="Final Test Evaluation"):
+            images = images.to(device)
+            labels = labels.to(device)
+            outputs = model(images)
+            _, predicted = torch.max(outputs.data, 1)
+            test_total += labels.size(0)
+            test_correct += (predicted == labels).sum().item()
+            test_probs.append(torch.softmax(outputs, dim=1).cpu().numpy())
+            test_targets.append(labels.cpu().numpy())
+    
+    test_acc = 100 * test_correct / test_total
+    test_probs = np.concatenate(test_probs, axis=0)
+    test_targets = np.concatenate(test_targets, axis=0)
+    
+    try:
+        if test_probs.shape[1] == 2:
+            test_auc = roc_auc_score(test_targets, test_probs[:, 1])
+        else:
+            test_auc = roc_auc_score(test_targets, test_probs, multi_class='ovr')
+    except ValueError:
+        test_auc = 0.0
+    
+    print(f"Final Test Accuracy: {test_acc:.2f}%")
+    print(f"Final Test AUC: {test_auc:.4f}")
+    print("="*70)
     
     return best_acc
 
