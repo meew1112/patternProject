@@ -451,13 +451,15 @@ def build_dataset(args):
 class CustomDataset(torch.utils.data.Dataset):
     """Custom dataset class for loading images with CSV metadata."""
     
-    def __init__(self, data_dir, metadata_csv, split='train', transform=None):
+    def __init__(self, data_dir, metadata_csv, split='train', transform=None, class_to_idx=None, classes=None):
         """
         Args:
             data_dir: Root directory containing image folders (train, val, test)
             metadata_csv: Path to CSV file with metadata and labels
             split: Which split to load ('train', 'val', 'test')
             transform: Optional transform to apply to images
+            class_to_idx: Optional global class-to-index mapping shared across splits
+            classes: Optional ordered list of class names shared across splits
         """
         self.data_dir = data_dir
         self.transform = transform
@@ -468,10 +470,25 @@ class CustomDataset(torch.utils.data.Dataset):
         
         # Filter by split
         self.samples = self.metadata[self.metadata['SPLIT'] == self.split].reset_index(drop=True)
-        
-        # Get unique diagnostic labels and create mapping
-        self.classes = sorted(self.samples['diagnostic'].unique())
-        self.class_to_idx = {cls: idx for idx, cls in enumerate(self.classes)}
+
+        # Use a shared label mapping across all splits so label IDs stay consistent
+        if classes is not None:
+            self.classes = list(classes)
+        elif class_to_idx is not None:
+            self.classes = list(class_to_idx.keys())
+        else:
+            self.classes = sorted(self.samples['diagnostic'].unique())
+
+        if class_to_idx is not None:
+            self.class_to_idx = dict(class_to_idx)
+        else:
+            self.class_to_idx = {cls: idx for idx, cls in enumerate(self.classes)}
+
+        missing_labels = sorted(set(self.samples['diagnostic'].unique()) - set(self.class_to_idx.keys()))
+        if missing_labels:
+            raise ValueError(
+                f"Split '{split}' contains labels not present in the provided class mapping: {missing_labels}"
+            )
         
         print(f"Loading {split} split with {len(self.samples)} samples")
         print(f"Classes: {self.classes}")

@@ -25,6 +25,7 @@ import os
 from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
+import pandas as pd
 from sklearn.metrics import roc_auc_score
 
 
@@ -87,27 +88,40 @@ def main(args):
         raise FileNotFoundError(f"Dataset directory not found: {dataset_dir}")
     if not os.path.exists(metadata_csv):
         raise FileNotFoundError(f"Metadata CSV not found: {metadata_csv}")
+
+    # Build one global class mapping from the full metadata so all splits share identical label IDs
+    metadata = pd.read_csv(metadata_csv)
+    if 'diagnostic' not in metadata.columns:
+        raise ValueError("Metadata CSV must contain a 'diagnostic' column")
+    global_classes = sorted(metadata['diagnostic'].dropna().unique().tolist())
+    global_class_to_idx = {cls: idx for idx, cls in enumerate(global_classes)}
     
     # Load train, val, and test datasets
     train_dataset = CustomDataset(
         dataset_dir, 
         metadata_csv, 
         split='train', 
-        transform=train_transform
+        transform=train_transform,
+        class_to_idx=global_class_to_idx,
+        classes=global_classes
     )
     
     val_dataset = CustomDataset(
         dataset_dir, 
         metadata_csv, 
         split='val', 
-        transform=test_transform
+        transform=test_transform,
+        class_to_idx=global_class_to_idx,
+        classes=global_classes
     )
     
     test_dataset = CustomDataset(
         dataset_dir, 
         metadata_csv, 
         split='test', 
-        transform=test_transform
+        transform=test_transform,
+        class_to_idx=global_class_to_idx,
+        classes=global_classes
     )
     
     # Get number of classes
@@ -146,14 +160,6 @@ def main(args):
     
     val_loader = DataLoader(
         val_dataset, 
-        batch_size=args.batch_size, 
-        shuffle=False, 
-        num_workers=4,
-        pin_memory=True
-    )
-    
-    test_loader = DataLoader(
-        test_dataset, 
         batch_size=args.batch_size, 
         shuffle=False, 
         num_workers=4,
