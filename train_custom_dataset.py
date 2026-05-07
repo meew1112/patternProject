@@ -110,27 +110,11 @@ def main(args):
     print(f"Training samples: {len(train_dataset)}")
     print(f"Test samples: {len(test_dataset)}")
     
-    # Compute class weights for handling class imbalance
-    print("\nComputing class weights for imbalanced data...")
-    labels = [train_dataset.class_to_idx[row['diagnostic']] for _, row in train_dataset.samples.iterrows()]
-    counts = Counter(labels)
-    class_sample_count = np.array([counts.get(i, 1) for i in range(num_classes)])
-    print(f"Class distribution: {dict(zip(train_dataset.classes, class_sample_count))}")
-    
-    # For weighted loss: inverse frequency
-    class_weights = torch.tensor(class_sample_count.max() / class_sample_count, dtype=torch.float).to(device)
-    print(f"Class weights (for loss): {class_weights.cpu().numpy()}")
-    
-    # For weighted sampler: per-sample weight = 1 / count[label]
-    sample_weights = np.array([1.0 / class_sample_count[label] for label in labels])
-    sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
-    print(f"Using WeightedRandomSampler to oversample minority classes.\n")
-    
-    # Create data loaders (train uses sampler, no shuffle)
+    # Create data loaders
     train_loader = DataLoader(
         train_dataset, 
         batch_size=args.batch_size, 
-        sampler=sampler,
+        shuffle=True, 
         num_workers=4,
         pin_memory=True
     )
