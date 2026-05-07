@@ -126,7 +126,7 @@ def main():
                         'confidence': outputs[i, pred.item()].item()
                     })
 
-                    sample_index += len(labels)
+            sample_index += len(labels)
     
     all_preds = np.array(all_preds)
     all_targets = np.array(all_targets)
