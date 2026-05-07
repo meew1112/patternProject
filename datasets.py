@@ -468,8 +468,10 @@ class CustomDataset(torch.utils.data.Dataset):
         # Read CSV file
         self.metadata = pd.read_csv(metadata_csv)
         
-        # Filter by split
-        self.samples = self.metadata[self.metadata['SPLIT'] == self.split].reset_index(drop=True)
+        # Filter by split (case/whitespace-insensitive)
+        self.samples = self.metadata[
+            self.metadata['SPLIT'].astype(str).str.strip().str.upper() == self.split
+        ].reset_index(drop=True)
 
         # Use a shared label mapping across all splits so label IDs stay consistent
         if classes is not None:
@@ -519,16 +521,16 @@ def build_transform(args):
     t_train = []
     # this should always dispatch to transforms_imagenet_train
     t_train.append(transforms.RandomResizedCrop(224))
-    t_train.append(transforms.AugMix(alpha= 0.4))
+    t_train.append(transforms.AugMix(alpha=0.1))
     #t_train.append(transforms.Lambda(lambda image: image.convert('RGB')))
     t_train.append(transforms.RandomHorizontalFlip(p=0.4))
     t_train.append(transforms.ToTensor())
-    t_train.append(transforms.Normalize(mean=[.5], std=[.5]))
+    t_train.append(transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]))
         
 
     t_test = []
     t_test.append(transforms.Resize((224, 224)))
     #t_test.append(transforms.Lambda(lambda image: image.convert('RGB')))
     t_test.append(transforms.ToTensor())
-    t_test.append(transforms.Normalize(mean=[.5], std=[.5]))
+    t_test.append(transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]))
     return transforms.Compose(t_train), transforms.Compose(t_test)
