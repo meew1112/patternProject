@@ -26,7 +26,7 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.metrics import roc_auc_score
-from collections import Counter
+
 
 # Add parent directory to path to import modules
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -143,8 +143,8 @@ def main(args):
     model = model_class(num_classes=num_classes)
     model = model.to(device)
     
-    # Loss function (with class weights) and optimizer
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    # Loss function and optimizer
+    criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(
         optimizer, 
@@ -346,12 +346,7 @@ def parse_args():
         help='Stop training if test accuracy does not improve for this many epochs. Set to 0 or a negative value to disable early stopping.'
     )
     
-    parser.add_argument(
-        '--use_augment',
-        type=lambda x: x.lower() in ('true', '1', 'yes'),
-        default=True,
-        help='Use strong augmentations (albumentations) for training data.'
-    )
+  
     
     return parser.parse_args()
 
