@@ -521,7 +521,8 @@ def build_transform(args):
     t_train = []
     # this should always dispatch to transforms_imagenet_train
     t_train.append(transforms.RandomResizedCrop(224))
-    t_train.append(transforms.AugMix(alpha=0.1))
+    if getattr(args, 'use_augmix', True):
+        t_train.append(transforms.AugMix(alpha=0.1))
     #t_train.append(transforms.Lambda(lambda image: image.convert('RGB')))
     t_train.append(transforms.RandomHorizontalFlip(p=0.4))
     t_train.append(transforms.ToTensor())

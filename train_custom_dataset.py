@@ -139,21 +139,24 @@ def main(args):
     counts = Counter(labels)
     class_sample_count = np.array([counts.get(i, 1) for i in range(num_classes)])
     print(f"Class distribution: {dict(zip(train_dataset.classes, class_sample_count))}")
-    
-    # For weighted loss: inverse frequency
-    class_weights = torch.tensor(class_sample_count.max() / class_sample_count, dtype=torch.float).to(device)
-    print(f"Class weights (for loss): {class_weights.cpu().numpy()}")
-    
-    # For weighted sampler: per-sample weight = 1 / count[label]
-    sample_weights = np.array([1.0 / class_sample_count[label] for label in labels])
-    sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
-    print(f"Using WeightedRandomSampler to oversample minority classes.\n")
+
+    class_weights = None
+    sampler = None
+    if args.imbalance == 'weights' or args.imbalance == 'both':
+        class_weights = torch.tensor(class_sample_count.max() / class_sample_count, dtype=torch.float).to(device)
+        print(f"Class weights (for loss): {class_weights.cpu().numpy()}")
+
+    if args.imbalance == 'sampler' or args.imbalance == 'both':
+        sample_weights = np.array([1.0 / class_sample_count[label] for label in labels])
+        sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
+        print("Using WeightedRandomSampler to oversample minority classes.\n")
     
     # Create data loaders
     train_loader = DataLoader(
-        train_dataset, 
-        batch_size=args.batch_size, 
+        train_dataset,
+        batch_size=args.batch_size,
         sampler=sampler,
+        shuffle=False if sampler is not None else True,
         num_workers=4,
         pin_memory=True
     )
@@ -425,6 +428,21 @@ def parse_args():
     )
 
     parser.add_argument(
+        '--imbalance',
+        type=str,
+        default='weights',
+        choices=['weights', 'sampler', 'both', 'none'],
+        help='How to handle class imbalance: weights, sampler, both, or none'
+    )
+
+    parser.add_argument(
+        '--use_augmix',
+        type=lambda x: str(x).lower() in ['1', 'true', 'yes', 'y'],
+        default=True,
+        help='Enable AugMix during training'
+    )
+
+    parser.add_argument(
         '--patience',
         type=int,
         default=10,
@@ -448,6 +466,8 @@ if __name__ == '__main__':
     print(f"Learning rate: {args.lr}")
     print(f"Epochs: {args.epochs}")
     print(f"Checkpoint: {args.checkpoint_path}")
+    print(f"Imbalance handling: {args.imbalance}")
+    print(f"Use AugMix: {args.use_augmix}")
     print("="*70 + "\n")
 
     if args.patience is not None and args.patience <= 0:
