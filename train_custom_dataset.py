@@ -194,7 +194,7 @@ def main(args):
     model = model.to(device)
     
     # Loss function (with class weights) and optimizer
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=args.label_smoothing)
 
     if args.optimizer == 'adam':
         optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -478,6 +478,13 @@ def parse_args():
         default=0.9,
         help='Momentum for SGD'
     )
+
+    parser.add_argument(
+        '--label_smoothing',
+        type=float,
+        default=0.0,
+        help='Label smoothing for CrossEntropyLoss (e.g., 0.05)'
+    )
     
   
     
@@ -500,6 +507,7 @@ if __name__ == '__main__':
     print(f"Use AugMix: {args.use_augmix}")
     print(f"Optimizer: {args.optimizer}")
     print(f"Weight decay: {args.weight_decay}")
+    print(f"Label smoothing: {args.label_smoothing}")
     if args.optimizer == 'sgd':
         print(f"Momentum: {args.momentum}")
     print("="*70 + "\n")
