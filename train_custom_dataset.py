@@ -195,7 +195,15 @@ def main(args):
     
     # Loss function (with class weights) and optimizer
     criterion = nn.CrossEntropyLoss(weight=class_weights)
-    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+
+    if args.optimizer == 'adam':
+        optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    elif args.optimizer == 'adamw':
+        optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    elif args.optimizer == 'sgd':
+        optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+    else:
+        raise ValueError(f"Unknown optimizer: {args.optimizer}")
     scheduler = optim.lr_scheduler.CosineAnnealingLR(
         optimizer, 
         T_max=args.epochs
@@ -448,6 +456,28 @@ def parse_args():
         default=10,
         help='Stop training if test accuracy does not improve for this many epochs. Set to 0 or a negative value to disable early stopping.'
     )
+
+    parser.add_argument(
+        '--optimizer',
+        type=str,
+        default='adamw',
+        choices=['adam', 'adamw', 'sgd'],
+        help='Optimizer to use'
+    )
+
+    parser.add_argument(
+        '--weight_decay',
+        type=float,
+        default=1e-4,
+        help='Weight decay for optimizer'
+    )
+
+    parser.add_argument(
+        '--momentum',
+        type=float,
+        default=0.9,
+        help='Momentum for SGD'
+    )
     
   
     
@@ -468,6 +498,10 @@ if __name__ == '__main__':
     print(f"Checkpoint: {args.checkpoint_path}")
     print(f"Imbalance handling: {args.imbalance}")
     print(f"Use AugMix: {args.use_augmix}")
+    print(f"Optimizer: {args.optimizer}")
+    print(f"Weight decay: {args.weight_decay}")
+    if args.optimizer == 'sgd':
+        print(f"Momentum: {args.momentum}")
     print("="*70 + "\n")
 
     if args.patience is not None and args.patience <= 0:
